@@ -13,6 +13,7 @@ pub mod discord;
 pub mod interaction;
 pub mod logging;
 pub mod shutdown;
+pub mod storage;
 pub mod stt;
 pub mod supervisor;
 pub mod twitch;

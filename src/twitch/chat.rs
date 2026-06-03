@@ -6,7 +6,7 @@
 //!   token) and sends replies/messages from a bounded outbound channel; otherwise
 //!   stays anonymous read-only (no sending).
 
-use crate::types::{ChatEvent, OutboundChat};
+use crate::types::{ChatEvent, OutboundChat, StoreRecord};
 use anyhow::Result;
 use chrono::{Duration as ChronoDuration, Utc};
 use std::convert::Infallible;
@@ -83,6 +83,7 @@ pub async fn run(
     cfg: ChatCfg,
     bcast_tx: broadcast::Sender<ChatEvent>,
     outbound_rx: mpsc::Receiver<OutboundChat>,
+    store_tx: Option<mpsc::Sender<StoreRecord>>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let can_send = cfg.bot_username.is_some() && cfg.bot_refresh_token.is_some();
@@ -102,7 +103,7 @@ pub async fn run(
             );
         client.join(cfg.channel.clone())?;
         info!(channel = %cfg.channel, "joined twitch chat (authenticated bot)");
-        event_loop(cfg.channel, true, incoming, client, bcast_tx, outbound_rx, shutdown).await
+        event_loop(cfg.channel, true, incoming, client, bcast_tx, outbound_rx, store_tx, shutdown).await
     } else {
         let creds = StaticLoginCredentials::anonymous();
         let config = ClientConfig::new_simple(creds);
@@ -111,7 +112,7 @@ pub async fn run(
         client.join(cfg.channel.clone())?;
         info!(channel = %cfg.channel, "joined twitch chat (anonymous, read-only)");
         let _ = can_send;
-        event_loop(cfg.channel, false, incoming, client, bcast_tx, outbound_rx, shutdown).await
+        event_loop(cfg.channel, false, incoming, client, bcast_tx, outbound_rx, store_tx, shutdown).await
     }
 }
 
@@ -122,6 +123,7 @@ async fn event_loop<L>(
     client: TwitchIRCClient<SecureTCPTransport, L>,
     bcast_tx: broadcast::Sender<ChatEvent>,
     mut outbound_rx: mpsc::Receiver<OutboundChat>,
+    store_tx: Option<mpsc::Sender<StoreRecord>>,
     shutdown: CancellationToken,
 ) -> Result<()>
 where
@@ -136,8 +138,12 @@ where
             msg = incoming.recv() => {
                 match msg {
                     Some(ServerMessage::Privmsg(m)) => {
+                        let ev = to_event(m);
+                        if let Some(s) = &store_tx {
+                            let _ = s.try_send(StoreRecord::Chat(ev.clone()));
+                        }
                         // broadcast send fails only if there are no receivers; ignore.
-                        let _ = bcast_tx.send(to_event(m));
+                        let _ = bcast_tx.send(ev);
                     }
                     Some(_) => {}
                     None => { warn!("twitch chat stream ended"); break; }

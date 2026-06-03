@@ -8,7 +8,9 @@ pub mod window;
 
 use crate::analysis::Analyzer;
 use crate::cost::CostGovernor;
-use crate::types::{ChatEvent, OutMessage, StreamStatus, StreamerMood, TranscriptSegment};
+use crate::types::{
+    ChatEvent, OutMessage, StoreRecord, StreamStatus, StreamerMood, TranscriptSegment,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -33,6 +35,7 @@ pub async fn run(
     mut status_rx: watch::Receiver<StreamStatus>,
     out_tx: mpsc::Sender<OutMessage>,
     mood_tx: watch::Sender<StreamerMood>,
+    store_tx: Option<mpsc::Sender<StoreRecord>>,
     shutdown: CancellationToken,
 ) {
     let mut window = Window::new(cfg.window_max_secs, cfg.window_max_tokens);
@@ -45,7 +48,7 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => {
                 if window.has_unsummarized() {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx, &store_tx).await;
                 }
                 info!("aggregator drained");
                 break;
@@ -67,13 +70,13 @@ pub async fn run(
             }
             changed = status_rx.changed() => {
                 if changed.is_ok() && !status_rx.borrow().is_online() && window.has_unsummarized() {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx, &store_tx).await;
                     trigger.record_fire(Instant::now());
                 }
             }
             _ = tick.tick() => {
                 if trigger.should_fire(window.unsummarized_tokens(), Instant::now()) {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx, &store_tx).await;
                     trigger.record_fire(Instant::now());
                 }
             }
@@ -94,6 +97,7 @@ async fn do_summary(
     prior_summary: &mut String,
     out_tx: &mpsc::Sender<OutMessage>,
     mood_tx: &watch::Sender<StreamerMood>,
+    store_tx: &Option<mpsc::Sender<StoreRecord>>,
 ) {
     if !cost.allowed() {
         return; // kill-switch tripped
@@ -107,6 +111,9 @@ async fn do_summary(
             *prior_summary = insight.running_summary.clone();
             // Publish the streamer's mood for the interaction engine.
             let _ = mood_tx.send(insight.streamer_mood.clone());
+            if let Some(s) = store_tx {
+                let _ = s.try_send(StoreRecord::Summary(insight.clone()));
+            }
             window.mark_summarized();
             if cost.record(spent) {
                 let _ = out_tx

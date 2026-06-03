@@ -6,7 +6,7 @@
 use crate::audio::vad;
 use crate::cost::CostGovernor;
 use crate::stt::SttProvider;
-use crate::types::{StreamStatus, TranscriptSegment};
+use crate::types::{StoreRecord, StreamStatus, TranscriptSegment};
 use anyhow::{anyhow, Context, Result};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -40,6 +40,7 @@ pub async fn run(
     cost: Arc<CostGovernor>,
     mut status_rx: watch::Receiver<StreamStatus>,
     tr_tx: mpsc::Sender<TranscriptSegment>,
+    store_tx: Option<mpsc::Sender<StoreRecord>>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let replay = cfg.replay_file.is_some();
@@ -80,6 +81,7 @@ pub async fn run(
             cfg.clone(),
             chunk_rx,
             tr_tx.clone(),
+            store_tx.clone(),
             shutdown.clone(),
         ));
 
@@ -233,6 +235,7 @@ async fn stt_loop(
     cfg: AudioCfg,
     mut chunk_rx: mpsc::Receiver<Vec<u8>>,
     tr_tx: mpsc::Sender<TranscriptSegment>,
+    store_tx: Option<mpsc::Sender<StoreRecord>>,
     shutdown: CancellationToken,
 ) {
     let minutes = cfg.chunk_secs as f64 / 60.0;
@@ -249,7 +252,11 @@ async fn stt_loop(
         match stt.transcribe(&http, &pcm).await {
             Ok(text) if !text.trim().is_empty() => {
                 cost.record(stt.cost_per_min() * minutes);
-                if tr_tx.send(TranscriptSegment { text }).await.is_err() {
+                let seg = TranscriptSegment { text };
+                if let Some(s) = &store_tx {
+                    let _ = s.try_send(StoreRecord::Transcript(seg.clone()));
+                }
+                if tr_tx.send(seg).await.is_err() {
                     break;
                 }
             }

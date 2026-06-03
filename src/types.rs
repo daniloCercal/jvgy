@@ -53,6 +53,14 @@ pub struct OutboundChat {
     pub reply_to: Option<String>,
 }
 
+/// A record to persist (Supabase). Single channel, multiple producers.
+#[derive(Debug, Clone)]
+pub enum StoreRecord {
+    Chat(ChatEvent),
+    Transcript(TranscriptSegment),
+    Summary(Insight),
+}
+
 /// The streamer's current emotional state, inferred from her transcribed speech.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamerMood {

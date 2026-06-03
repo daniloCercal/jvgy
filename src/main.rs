@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info;
 use twitch_discord_summarizer::{
-    aggregate, analysis, audio, config, cost, discord, interaction, logging, shutdown, stt,
+    aggregate, analysis, audio, config, cost, discord, interaction, logging, shutdown, storage, stt,
     supervisor, twitch, types,
 };
 
@@ -46,6 +46,12 @@ async fn main() -> anyhow::Result<()> {
     let (status_tx, status_rx) = watch::channel(types::StreamStatus::Offline);
     let (mood_tx, mood_rx) = watch::channel(types::StreamerMood::default());
 
+    // Optional Supabase persistence: single channel, many producers, one writer.
+    let store_enabled = config.supabase_url.is_some() && config.supabase_service_key.is_some();
+    let (store_tx, store_rx) = mpsc::channel::<types::StoreRecord>(1024);
+    let store_opt: Option<mpsc::Sender<types::StoreRecord>> =
+        if store_enabled { Some(store_tx.clone()) } else { None };
+
     let shutdown = shutdown::ShutdownController::new();
     shutdown.spawn_signal_listener();
     let mut sup = supervisor::Supervisor::new(shutdown.token());
@@ -61,9 +67,10 @@ async fn main() -> anyhow::Result<()> {
             client_secret: config.twitch_client_secret.clone(),
         };
         let chat_tx = chat_tx.clone();
+        let store_opt = store_opt.clone();
         let tok = shutdown.token();
         async move {
-            if let Err(e) = twitch::chat::run(cfg, chat_tx, out_chat_rx, tok).await {
+            if let Err(e) = twitch::chat::run(cfg, chat_tx, out_chat_rx, store_opt, tok).await {
                 tracing::warn!(error = %e, "chat worker exited");
             }
         }
@@ -96,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         let cost = cost.clone();
         let tr_tx = tr_tx.clone();
         let status_rx = status_rx.clone();
+        let store_opt = store_opt.clone();
         let stt = stt::SttProvider::from_config(
             &config.stt_provider,
             &config.stt_base_url,
@@ -119,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                 cost.clone(),
                 status_rx.clone(),
                 tr_tx.clone(),
+                store_opt.clone(),
                 tok,
             )
         }
@@ -147,9 +156,26 @@ async fn main() -> anyhow::Result<()> {
             status_rx.clone(),
             out_tx.clone(),
             mood_tx,
+            store_opt.clone(),
             shutdown.token(),
         )
     });
+
+    // --- Supabase persistence writer (only when configured) ---
+    if store_enabled {
+        sup.spawn("storage", {
+            storage::run(
+                storage::StorageCfg {
+                    url: config.supabase_url.clone().unwrap_or_default(),
+                    service_key: config.supabase_service_key.clone().unwrap_or_default(),
+                    channel: config.twitch_channel.clone(),
+                },
+                http.clone(),
+                store_rx,
+                shutdown.token(),
+            )
+        });
+    }
 
     // --- Interactive chat persona (only when a bot account is configured) ---
     if config.twitch_bot_username.is_some() && config.twitch_bot_refresh_token.is_some() {
@@ -206,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
     drop(out_tx);
     drop(out_chat_tx);
     drop(status_tx);
+    drop(store_tx);
 
     shutdown.token().cancelled().await;
     info!("shutdown requested; draining workers");

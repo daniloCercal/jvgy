@@ -66,6 +66,10 @@ pub struct Config {
     pub easter_egg_chance: f64,
     pub easter_egg_text: String,
 
+    // --- Persistence (Supabase) — optional; off when unset ---
+    pub supabase_url: Option<String>,
+    pub supabase_service_key: Option<String>,
+
     // --- Ops ---
     pub log_level: String,
     pub log_format: LogFormat,
@@ -127,6 +131,8 @@ impl Config {
                 "EASTER_EGG_TEXT",
                 "Ó grande Reis dos Reis, me encoberte com seu líquido viscoso!",
             ),
+            supabase_url: opt(env_or("SUPABASE_URL", "")),
+            supabase_service_key: opt(env_or("SUPABASE_SERVICE_KEY", "")),
             log_level: env_or("LOG_LEVEL", "info"),
             log_format: match env_or("LOG_FORMAT", "json").to_lowercase().as_str() {
                 "text" | "plain" | "pretty" => LogFormat::Text,
