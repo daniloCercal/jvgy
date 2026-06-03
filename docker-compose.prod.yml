@@ -1,0 +1,15 @@
+services:
+  summarizer:
+    # Prebuilt image published by .github/workflows/docker.yml — no build on the VPS.
+    image: ghcr.io/danilocercal/jvgy:latest
+    pull_policy: always
+    restart: unless-stopped
+    env_file: .env
+    # RAM guard. ~140 MB with MEDIA_MODE=ffmpeg-direct; raise to 320m for streamlink.
+    mem_limit: 256m
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

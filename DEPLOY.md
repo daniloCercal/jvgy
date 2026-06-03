@@ -63,6 +63,26 @@ rotation. To stop gracefully (drains + posts a final summary):
 > Cross-building from an x86 dev machine instead:
 > `docker buildx build --platform linux/arm64 -t twitch-summarizer .`
 
+## 3c. Pull a prebuilt image from GHCR (recommended for a tiny VPS)
+
+`.github/workflows/docker.yml` builds the image on GitHub's runners (free) and
+publishes it to `ghcr.io/danilocercal/jvgy`. The VPS then **only pulls** — no
+Rust compile, no big RAM/CPU spike.
+
+1. Push to GitHub → wait for the **Actions** run (Actions tab) to finish.
+2. Make the image pullable from the VPS — either:
+   - **Package public** (simplest; the image holds no secrets — config is via
+     `.env` at runtime): GitHub → your profile → Packages → `jvgy` → Package
+     settings → Change visibility → Public; **or**
+   - **`docker login ghcr.io`** on the VPS with a PAT that has `read:packages`.
+3. Deploy with the prebuilt image:
+   ```sh
+   docker compose -f docker-compose.prod.yml up -d
+   docker compose -f docker-compose.prod.yml logs -f
+   ```
+   Update later with: `docker compose -f docker-compose.prod.yml pull && \
+   docker compose -f docker-compose.prod.yml up -d`.
+
 ## 3b. Run as a bare binary under systemd
 
 ```sh
