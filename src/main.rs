@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
                 vad_enabled: config.vad_enabled,
                 vad_threshold: config.vad_threshold,
                 replay_file: config.audio_replay_file.clone(),
+                media_mode: config.media_mode.clone(),
             };
             audio::pipeline::run(
                 cfg,

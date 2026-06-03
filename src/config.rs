@@ -38,6 +38,9 @@ pub struct Config {
     /// When set, the audio pipeline transcodes this local file (looped) instead
     /// of pulling the live stream — for replaying a recorded sample in tests.
     pub audio_replay_file: Option<String>,
+    /// `streamlink` (default, robust) or `ffmpeg-direct` (resolve the HLS URL in
+    /// Rust and let ffmpeg read it — drops streamlink's ~50 MB Python RSS).
+    pub media_mode: String,
 
     // --- LLM (analysis) ---
     pub llm_base_url: String,
@@ -93,6 +96,7 @@ impl Config {
                     Some(v)
                 }
             },
+            media_mode: env_or("MEDIA_MODE", "streamlink").to_lowercase(),
             llm_base_url: env_or("LLM_BASE_URL", "https://platform.xiaomimimo.com/v1"),
             llm_api_key: env_or("LLM_API_KEY", ""),
             llm_model: env_or("LLM_MODEL", "mimo-v2.5-pro"),

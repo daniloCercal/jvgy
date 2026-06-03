@@ -1,0 +1,16 @@
+services:
+  summarizer:
+    build: .
+    image: twitch-summarizer
+    restart: unless-stopped
+    env_file: .env
+    # RAM guard. Active footprint ~120-140 MB with MEDIA_MODE=ffmpeg-direct;
+    # raise to 320m if using MEDIA_MODE=streamlink (Python adds ~50 MB).
+    mem_limit: 256m
+    # Allow time for the graceful drain (final summary) on stop.
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

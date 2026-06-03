@@ -3,4 +3,5 @@
 
 pub mod chat;
 pub mod helix;
+pub mod hls;
 pub mod lifecycle;

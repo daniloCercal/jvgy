@@ -29,6 +29,8 @@ pub struct AudioCfg {
     pub vad_threshold: f64,
     /// Replay a local file (looped) instead of pulling the live stream.
     pub replay_file: Option<String>,
+    /// `streamlink` or `ffmpeg-direct` (see config).
+    pub media_mode: String,
 }
 
 pub async fn run(
@@ -66,6 +68,7 @@ pub async fn run(
 
         let reader = tokio::spawn(capture_loop(
             cfg.clone(),
+            http.clone(),
             chunk_tx,
             status_rx.clone(),
             shutdown.clone(),
@@ -100,29 +103,49 @@ pub async fn run(
     }
 }
 
+/// Spawn ffmpeg with the given input args, transcoding to 16 kHz mono s16le on
+/// stdout (no stdin). Used by replay and ffmpeg-direct modes.
+fn spawn_ffmpeg_stdout(input_args: &[&str]) -> Result<Child> {
+    let mut args: Vec<&str> = vec!["-hide_banner", "-loglevel", "error"];
+    args.extend_from_slice(input_args);
+    args.extend_from_slice(&["-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"]);
+    Command::new("ffmpeg")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(Into::into)
+}
+
 async fn capture_loop(
     cfg: AudioCfg,
+    http: reqwest::Client,
     chunk_tx: mpsc::Sender<Vec<u8>>,
     mut status_rx: watch::Receiver<StreamStatus>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    // ffmpeg's stdin is either streamlink's stdout (live) or a replay file read
-    // directly by ffmpeg. We keep optional handles for clean teardown.
+    // ffmpeg either reads the source directly (replay file / resolved HLS URL)
+    // or transcodes from streamlink's stdout (default). Optional handles let us
+    // tear everything down cleanly.
     let mut streamlink: Option<Child> = None;
     let mut pump: Option<JoinHandle<()>> = None;
 
     let mut ffmpeg = if let Some(file) = &cfg.replay_file {
-        Command::new("ffmpeg")
-            .args([
-                "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", file,
-                "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
+        spawn_ffmpeg_stdout(&["-re", "-stream_loop", "-1", "-i", file])
             .context("spawning ffmpeg for replay (is it installed?)")?
+    } else if cfg.media_mode == "ffmpeg-direct" {
+        // Option B: resolve the HLS audio_only URL in-process, drop streamlink.
+        let url = crate::twitch::hls::resolve_audio_url(&http, &cfg.channel)
+            .await
+            .context("resolving HLS audio URL (ffmpeg-direct)")?;
+        info!(channel = %cfg.channel, "resolved direct HLS audio URL");
+        spawn_ffmpeg_stdout(&[
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2", "-i", &url,
+        ])
+        .context("spawning ffmpeg (is it installed?)")?
     } else {
+        // Option A (default): streamlink | ffmpeg.
         let mut sl = Command::new("streamlink")
             .args([
                 "--stdout",

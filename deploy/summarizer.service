@@ -1,0 +1,30 @@
+[Unit]
+Description=Twitch -> Discord stream summarizer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=summarizer
+EnvironmentFile=/etc/summarizer.env
+ExecStart=/usr/local/bin/summarizer
+
+# Resilience
+Restart=always
+RestartSec=5
+
+# Graceful shutdown: send SIGTERM and allow the drain/final-summary to finish.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# RAM guard (tune: ~140M for ffmpeg-direct, ~256M for streamlink mode).
+MemoryMax=256M
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
