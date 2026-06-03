@@ -168,6 +168,10 @@ async fn main() -> anyhow::Result<()> {
                     .to_lowercase(),
                 persona: interaction::persona::load(&config.persona_file),
                 chat_rate_per_30s: config.chat_rate_per_30s,
+                proactive_min_interval: config.proactive_min_interval,
+                proactive_probability: config.proactive_probability,
+                client_id: config.twitch_client_id.clone(),
+                client_secret: config.twitch_client_secret.clone(),
                 easter_egg_user: config.easter_egg_user.clone(),
                 easter_egg_chance: config.easter_egg_chance,
                 easter_egg_text: config.easter_egg_text.clone(),
@@ -176,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
             interaction::run(
                 cfg,
                 analyzer,
+                http.clone(),
                 cost.clone(),
                 chat_tx.subscribe(),
                 mood_rx.clone(),

@@ -3,7 +3,9 @@
 
 use crate::types::StreamInfo;
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub struct HelixClient {
@@ -98,4 +100,50 @@ impl HelixClient {
             viewers: d.viewer_count.unwrap_or(0),
         }))
     }
+
+    /// Fetch account creation timestamps for up to 100 user ids (for "tempo de
+    /// casa"/account-age). Returns a map id -> created_at.
+    pub async fn get_users_created_at(
+        &mut self,
+        ids: &[String],
+    ) -> Result<HashMap<String, DateTime<Utc>>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let token = self.ensure_token().await?;
+        let mut req = self
+            .http
+            .get("https://api.twitch.tv/helix/users")
+            .header("Client-Id", &self.client_id)
+            .bearer_auth(&token);
+        for id in ids.iter().take(100) {
+            req = req.query(&[("id", id)]);
+        }
+        let resp = req
+            .send()
+            .await
+            .context("helix users request")?
+            .error_for_status()
+            .context("helix users status")?
+            .json::<UsersResp>()
+            .await
+            .context("helix users decode")?;
+        let mut out = HashMap::new();
+        for u in resp.data {
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&u.created_at) {
+                out.insert(u.id, dt.with_timezone(&Utc));
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Deserialize)]
+struct UsersResp {
+    data: Vec<UserData>,
+}
+#[derive(Deserialize)]
+struct UserData {
+    id: String,
+    created_at: String,
 }
