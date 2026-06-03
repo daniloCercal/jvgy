@@ -10,6 +10,7 @@ pub mod backoff;
 pub mod config;
 pub mod cost;
 pub mod discord;
+pub mod interaction;
 pub mod logging;
 pub mod shutdown;
 pub mod stt;

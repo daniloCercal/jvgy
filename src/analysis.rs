@@ -42,9 +42,11 @@ impl Analyzer {
              Produza uma análise incremental em português do Brasil. \
              Responda APENAS com JSON válido, sem markdown, no formato exato: \
              {{\"topics\":[\"...\"],\"sentiment\":{{\"mood\":\"...\",\"score\":-1.0}},\
-             \"key_moments\":[{{\"t\":\"mm:ss\",\"note\":\"...\"}}],\"running_summary\":\"...\"}}. \
+             \"key_moments\":[{{\"t\":\"mm:ss\",\"note\":\"...\"}}],\"running_summary\":\"...\",\
+             \"streamer_mood\":{{\"label\":\"neutra|animada|tiltada|cansada|focada\",\"intensity\":0.0}}}}. \
              O campo running_summary deve atualizar e incorporar o resumo anterior, sem repeti-lo por completo. \
-             O score de sentimento vai de -1.0 (muito negativo) a 1.0 (muito positivo)."
+             O sentiment é o clima do CHAT; o streamer_mood é o estado da STREAMER inferido das linhas [fala] \
+             (intensity de 0.0 a 1.0). O score de sentimento vai de -1.0 (muito negativo) a 1.0 (muito positivo)."
         );
         let prior = if prior_summary.trim().is_empty() {
             "(nenhum ainda)"
@@ -90,6 +92,44 @@ impl Analyzer {
 
         let insight = parse_insight(&content).context("parsing llm insight json")?;
         Ok((insight, cost))
+    }
+
+    /// Generate a single in-character chat line (plain text, not JSON).
+    /// Returns `(text, estimated_usd)`.
+    pub async fn reply(&self, system: String, user: String) -> Result<(String, f64)> {
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ],
+            "temperature": 0.85,
+            "max_tokens": 120
+        });
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let resp: ChatResp = self
+            .http
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("llm reply request")?
+            .error_for_status()
+            .context("llm reply status")?
+            .json()
+            .await
+            .context("llm reply decode")?;
+        let content = resp
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .unwrap_or_default();
+        let usage = resp.usage.unwrap_or_default();
+        let cost = (usage.prompt_tokens as f64 / 1_000_000.0) * self.input_usd_per_mtok
+            + (usage.completion_tokens as f64 / 1_000_000.0) * self.output_usd_per_mtok;
+        Ok((content, cost))
     }
 }
 

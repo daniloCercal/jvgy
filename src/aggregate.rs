@@ -8,10 +8,10 @@ pub mod window;
 
 use crate::analysis::Analyzer;
 use crate::cost::CostGovernor;
-use crate::types::{ChatEvent, OutMessage, StreamStatus, TranscriptSegment};
+use crate::types::{ChatEvent, OutMessage, StreamStatus, StreamerMood, TranscriptSegment};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use trigger::Trigger;
@@ -28,10 +28,11 @@ pub async fn run(
     cfg: AggregateCfg,
     analyzer: Analyzer,
     cost: Arc<CostGovernor>,
-    mut chat_rx: mpsc::Receiver<ChatEvent>,
+    mut chat_rx: broadcast::Receiver<ChatEvent>,
     mut tr_rx: mpsc::Receiver<TranscriptSegment>,
     mut status_rx: watch::Receiver<StreamStatus>,
     out_tx: mpsc::Sender<OutMessage>,
+    mood_tx: watch::Sender<StreamerMood>,
     shutdown: CancellationToken,
 ) {
     let mut window = Window::new(cfg.window_max_secs, cfg.window_max_tokens);
@@ -44,29 +45,35 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => {
                 if window.has_unsummarized() {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
                 }
                 info!("aggregator drained");
                 break;
             }
-            Some(ev) = chat_rx.recv() => {
-                if is_summary_command(&ev.text) {
-                    trigger.request_manual();
+            res = chat_rx.recv() => {
+                match res {
+                    Ok(ev) => {
+                        if is_summary_command(&ev.text) {
+                            trigger.request_manual();
+                        }
+                        window.push_chat(ev.user, ev.text);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => {}
                 }
-                window.push_chat(ev.user, ev.text);
             }
             Some(seg) = tr_rx.recv() => {
                 window.push_transcript(seg.text);
             }
             changed = status_rx.changed() => {
                 if changed.is_ok() && !status_rx.borrow().is_online() && window.has_unsummarized() {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
                     trigger.record_fire(Instant::now());
                 }
             }
             _ = tick.tick() => {
                 if trigger.should_fire(window.unsummarized_tokens(), Instant::now()) {
-                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx).await;
+                    do_summary(&cfg, &analyzer, &cost, &mut window, &mut prior_summary, &out_tx, &mood_tx).await;
                     trigger.record_fire(Instant::now());
                 }
             }
@@ -86,6 +93,7 @@ async fn do_summary(
     window: &mut Window,
     prior_summary: &mut String,
     out_tx: &mpsc::Sender<OutMessage>,
+    mood_tx: &watch::Sender<StreamerMood>,
 ) {
     if !cost.allowed() {
         return; // kill-switch tripped
@@ -97,6 +105,8 @@ async fn do_summary(
     match analyzer.summarize(&cfg.channel, prior_summary, &delta).await {
         Ok((insight, spent)) => {
             *prior_summary = insight.running_summary.clone();
+            // Publish the streamer's mood for the interaction engine.
+            let _ = mood_tx.send(insight.streamer_mood.clone());
             window.mark_summarized();
             if cost.record(spent) {
                 let _ = out_tx

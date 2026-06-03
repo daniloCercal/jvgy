@@ -53,6 +53,20 @@ pub struct Config {
     // --- Cost control ---
     pub daily_spend_ceiling_usd: f64,
 
+    // --- Interactive chat persona (Phase 3) ---
+    /// Bot account login for SENDING in chat. `None` = anonymous read-only.
+    pub twitch_bot_username: Option<String>,
+    /// OAuth refresh token for the bot account (minted once; auto-refreshed).
+    pub twitch_bot_refresh_token: Option<String>,
+    pub chat_rate_per_30s: u32,
+    pub proactive_min_interval: Duration,
+    pub proactive_probability: f64,
+    pub max_msgs_per_min: u32,
+    pub persona_file: String,
+    pub easter_egg_user: String,
+    pub easter_egg_chance: f64,
+    pub easter_egg_text: String,
+
     // --- Ops ---
     pub log_level: String,
     pub log_format: LogFormat,
@@ -102,6 +116,19 @@ impl Config {
             llm_model: env_or("LLM_MODEL", "mimo-v2.5-pro"),
             discord_webhook_url: env_or("DISCORD_WEBHOOK_URL", ""),
             daily_spend_ceiling_usd: env_parse("DAILY_SPEND_CEILING_USD", 5.0f64)?,
+            twitch_bot_username: opt(env_or("TWITCH_BOT_USERNAME", "")),
+            twitch_bot_refresh_token: opt(env_or("TWITCH_BOT_REFRESH_TOKEN", "")),
+            chat_rate_per_30s: env_parse("CHAT_RATE_PER_30S", 18u32)?,
+            proactive_min_interval: env_duration_secs("PROACTIVE_MIN_INTERVAL_SECS", 120)?,
+            proactive_probability: env_parse("PROACTIVE_PROBABILITY", 0.35f64)?,
+            max_msgs_per_min: env_parse("MAX_MSGS_PER_MIN", 6u32)?,
+            persona_file: env_or("PERSONA_FILE", "./persona.md"),
+            easter_egg_user: env_or("EASTER_EGG_USER", "YoRods").to_lowercase(),
+            easter_egg_chance: env_parse("EASTER_EGG_CHANCE", 0.005f64)?,
+            easter_egg_text: env_or(
+                "EASTER_EGG_TEXT",
+                "Ó grande Reis dos Reis, me encoberte com seu líquido viscoso!",
+            ),
             log_level: env_or("LOG_LEVEL", "info"),
             log_format: match env_or("LOG_FORMAT", "json").to_lowercase().as_str() {
                 "text" | "plain" | "pretty" => LogFormat::Text,
@@ -137,6 +164,15 @@ fn env_required(key: &str) -> Result<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// `None` for empty/whitespace strings, else `Some(trimmed-not-required)`.
+fn opt(s: String) -> Option<String> {
+    if s.trim().is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn env_parse<T>(key: &str, default: T) -> Result<T>

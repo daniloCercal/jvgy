@@ -36,7 +36,10 @@ reqwest = { version = "0.13", default-features = false, features = [
 twitch-irc = { version = "6", default-features = false, features = [
     "transport-tcp",
     "transport-tcp-rustls-webpki-roots",
+    "refreshing-token-rustls-webpki-roots",
 ] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1.40", features = [

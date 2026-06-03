@@ -26,11 +26,49 @@ impl StreamStatus {
     }
 }
 
-/// A single chat message, normalized from Twitch IRC.
+/// A single chat message, normalized from Twitch IRC (with identity/badges).
 #[derive(Debug, Clone)]
 pub struct ChatEvent {
+    /// Display name.
     pub user: String,
+    /// Lowercase login.
+    pub login: String,
+    pub user_id: String,
+    /// IRC message id (for threaded replies).
+    pub message_id: String,
     pub text: String,
+    pub sub_months: u32,
+    pub is_mod: bool,
+    pub is_vip: bool,
+    pub is_sub: bool,
+    pub is_founder: bool,
+    pub is_broadcaster: bool,
+}
+
+/// A message the bot wants to send to chat. `reply_to` = a message id to
+/// thread-reply to (Twitch `reply-parent-msg-id`); `None` = a normal message.
+#[derive(Debug, Clone)]
+pub struct OutboundChat {
+    pub text: String,
+    pub reply_to: Option<String>,
+}
+
+/// The streamer's current emotional state, inferred from her transcribed speech.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamerMood {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub intensity: f32,
+}
+
+impl Default for StreamerMood {
+    fn default() -> Self {
+        Self {
+            label: "neutra".into(),
+            intensity: 0.0,
+        }
+    }
 }
 
 /// A finalized transcript span from the STT provider.
@@ -59,6 +97,9 @@ pub struct Insight {
     pub key_moments: Vec<KeyMoment>,
     #[serde(default)]
     pub running_summary: String,
+    /// The streamer's mood, inferred from her speech (drives chat interaction tone).
+    #[serde(default)]
+    pub streamer_mood: StreamerMood,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

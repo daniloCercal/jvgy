@@ -12,11 +12,11 @@
 use anyhow::Context;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tracing::info;
 use twitch_discord_summarizer::{
-    aggregate, analysis, audio, config, cost, discord, logging, shutdown, stt, supervisor, twitch,
-    types,
+    aggregate, analysis, audio, config, cost, discord, interaction, logging, shutdown, stt,
+    supervisor, twitch, types,
 };
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -37,21 +37,39 @@ async fn main() -> anyhow::Result<()> {
     let cost = Arc::new(cost::CostGovernor::new(config.daily_spend_ceiling_usd));
 
     // --- Bounded channel topology (capacities + policies per design s4) ---
-    let (chat_tx, chat_rx) = mpsc::channel::<types::ChatEvent>(1024);
+    // Chat fans out to multiple consumers (aggregator + interaction) via broadcast.
+    let (chat_tx, _) = broadcast::channel::<types::ChatEvent>(1024);
+    let agg_chat_rx = chat_tx.subscribe(); // subscribe before the producer starts
     let (tr_tx, tr_rx) = mpsc::channel::<types::TranscriptSegment>(256);
     let (out_tx, out_rx) = mpsc::channel::<types::OutMessage>(32);
+    let (out_chat_tx, out_chat_rx) = mpsc::channel::<types::OutboundChat>(32);
     let (status_tx, status_rx) = watch::channel(types::StreamStatus::Offline);
+    let (mood_tx, mood_rx) = watch::channel(types::StreamerMood::default());
 
     let shutdown = shutdown::ShutdownController::new();
     shutdown.spawn_signal_listener();
     let mut sup = supervisor::Supervisor::new(shutdown.token());
 
-    // --- Supervised producers (restart on failure/panic with backoff) ---
-    sup.supervise("chat", {
-        let channel = config.twitch_channel.clone();
+    // --- Chat: long-lived (twitch-irc reconnects internally); owns the outbound
+    // receiver, so it isn't restart-supervised. ---
+    sup.spawn("chat", {
+        let cfg = twitch::chat::ChatCfg {
+            channel: config.twitch_channel.clone(),
+            bot_username: config.twitch_bot_username.clone(),
+            bot_refresh_token: config.twitch_bot_refresh_token.clone(),
+            client_id: config.twitch_client_id.clone(),
+            client_secret: config.twitch_client_secret.clone(),
+        };
         let chat_tx = chat_tx.clone();
-        move |tok| twitch::chat::run(channel.clone(), chat_tx.clone(), tok)
+        let tok = shutdown.token();
+        async move {
+            if let Err(e) = twitch::chat::run(cfg, chat_tx, out_chat_rx, tok).await {
+                tracing::warn!(error = %e, "chat worker exited");
+            }
+        }
     });
+
+    // --- Supervised producers (restart on failure/panic with backoff) ---
 
     sup.supervise("lifecycle", {
         let config = config.clone();
@@ -124,13 +142,48 @@ async fn main() -> anyhow::Result<()> {
             cfg,
             analyzer,
             cost.clone(),
-            chat_rx,
+            agg_chat_rx,
             tr_rx,
             status_rx.clone(),
             out_tx.clone(),
+            mood_tx,
             shutdown.token(),
         )
     });
+
+    // --- Interactive chat persona (only when a bot account is configured) ---
+    if config.twitch_bot_username.is_some() && config.twitch_bot_refresh_token.is_some() {
+        sup.spawn("interaction", {
+            let analyzer = analysis::Analyzer::new(
+                http.clone(),
+                config.llm_base_url.clone(),
+                config.llm_api_key.clone(),
+                config.llm_model.clone(),
+            );
+            let cfg = interaction::InteractionCfg {
+                bot_login: config
+                    .twitch_bot_username
+                    .clone()
+                    .unwrap_or_default()
+                    .to_lowercase(),
+                persona: interaction::persona::load(&config.persona_file),
+                chat_rate_per_30s: config.chat_rate_per_30s,
+                easter_egg_user: config.easter_egg_user.clone(),
+                easter_egg_chance: config.easter_egg_chance,
+                easter_egg_text: config.easter_egg_text.clone(),
+                reply_max_chars: 200,
+            };
+            interaction::run(
+                cfg,
+                analyzer,
+                cost.clone(),
+                chat_tx.subscribe(),
+                mood_rx.clone(),
+                out_chat_tx.clone(),
+                shutdown.token(),
+            )
+        });
+    }
 
     sup.spawn("output", {
         discord::run(
@@ -146,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
     drop(chat_tx);
     drop(tr_tx);
     drop(out_tx);
+    drop(out_chat_tx);
     drop(status_tx);
 
     shutdown.token().cancelled().await;

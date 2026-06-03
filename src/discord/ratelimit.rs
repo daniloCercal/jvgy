@@ -13,11 +13,16 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn per_minute(n: u32) -> Self {
+        Self::per_window(n, 60.0)
+    }
+
+    /// `n` tokens per `window_secs` (e.g. Twitch chat: 20 per 30 s).
+    pub fn per_window(n: u32, window_secs: f64) -> Self {
         let capacity = n.max(1) as f64;
         Self {
             capacity,
             tokens: capacity,
-            refill_per_sec: capacity / 60.0,
+            refill_per_sec: capacity / window_secs.max(1.0),
             last: Instant::now(),
         }
     }
